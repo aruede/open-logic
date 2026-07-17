@@ -82,13 +82,11 @@ end entity;
 architecture rtl of olo_axi_lite_slave is
 
     -- FSM Type
-    type Fsm_t is (Idle, WrCmd, WrData, WrResp, RdCmd, RdData, RdResp);
+    type Fsm_t is (Idle, WrData, WrResp, RdData, RdResp);
 
     -- TwoProcess Record
     type TwoProcess_r is record
         State   : Fsm_t;
-        ArReady : std_logic;
-        AwReady : std_logic;
         WReady  : std_logic;
         BValid  : std_logic;
         RValid  : std_logic;
@@ -125,31 +123,25 @@ begin
         v := r;
 
         -- Default values
-        v.ArReady := '0';
-        v.AwReady := '0';
-        v.Wr      := '0';
-        v.Rd      := '0';
+        v.Wr := '0';
+        v.Rd := '0';
 
         -- FSM
         case r.State is
             -- Idle
+            -- NOTE: ArReady/AwReady are driven combinatorially below. Address and
+            -- next-state are resolved here in the same cycle as the handshake.
             when Idle =>
-                -- Idle
                 if S_AxiLite_ArValid = '1' then
-                    v.State   := RdCmd;
-                    v.ArReady := '1';
+                    v.Addr  := S_AxiLite_ArAddr;
+                    v.Rd    := '1';
+                    v.State := RdData;
+                    v.ToCnt := ReadTimeoutClks_g - 1;
                 elsif S_AxiLite_AwValid = '1' then
-                    v.State   := WrCmd;
-                    v.AwReady := '1';
+                    v.Addr   := S_AxiLite_AwAddr(S_AxiLite_AwAddr'high downto UnusedBits_c) & zerosVector(UnusedBits_c);
+                    v.WReady := '1';
+                    v.State  := WrData;
                 end if;
-
-            -- Write
-            when WrCmd =>
-                -- Latch write command
-                v.Addr := S_AxiLite_AwAddr(S_AxiLite_AwAddr'high downto UnusedBits_c) & zerosVector(UnusedBits_c);
-                -- Get ready for write data
-                v.WReady := '1';
-                v.State  := WrData;
 
             when WrData =>
                 -- Receive write data
@@ -170,13 +162,6 @@ begin
                 end if;
 
             -- Read
-            when RdCmd =>
-                -- Forward read command
-                v.Addr  := S_AxiLite_ArAddr;
-                v.Rd    := '1';
-                v.State := RdData;
-                v.ToCnt := ReadTimeoutClks_g-1;
-
             when RdData =>
                 -- Wait for read data
                 if Rb_RdValid = '1' then
@@ -208,8 +193,10 @@ begin
         end case;
 
         -- Outputs AXI
-        S_AxiLite_ArReady <= r.ArReady;
-        S_AxiLite_AwReady <= r.AwReady;
+        -- Combinatorial ready: handshake completes in the same cycle ArValid/AwValid is seen while Idle
+        S_AxiLite_ArReady <= '1' when r.State = Idle and S_AxiLite_ArValid = '1' else '0';
+        S_AxiLite_AwReady <= '1' when r.State = Idle and S_AxiLite_AwValid = '1'
+                                       and S_AxiLite_ArValid = '0' else '0';
         S_AxiLite_WReady  <= r.WReady;
         S_AxiLite_BResp   <= AxiResp_Okay_c; -- Writes can't fail
         S_AxiLite_BValid  <= r.BValid;
@@ -235,8 +222,6 @@ begin
             r <= r_next;
             if Rst = '1' then
                 r.State   <= Idle;
-                r.ArReady <= '0';
-                r.AwReady <= '0';
                 r.WReady  <= '0';
                 r.Wr      <= '0';
                 r.BValid  <= '0';
